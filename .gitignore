@@ -1,0 +1,5 @@
+*.png
+*.jpeg
+__pycache__
+.cache-vjsrinivasraj
+config.py
