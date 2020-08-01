@@ -15,6 +15,66 @@ import threading
 global COLORS
 global CURRENT_PLAYING_SONG
 
+def pixel_rgb_to_hsv(pixel):
+    rp,gp,bp = np.divide(pixel, 255)
+    cmax = max(rp,gp,bp)
+    cmin = min(rp, gp, bp)
+    delta = cmax-cmin
+    
+    if delta == 0:
+        hue = 0
+    elif cmax == rp:
+        hue = (60 * (((gp-bp)/delta) % 6))
+    elif cmax == gp:
+        hue = (60 * (((bp-rp)/delta) + 2))
+    elif cmax == bp:
+        hue = (60 * (((rp-gp)/delta) + 4))
+
+    if cmax == 0:
+        saturation = 0
+    else:
+        saturation = delta/cmax
+
+    value = cmax
+    return [hue,saturation,value]
+
+def pixel_hsv_to_rgb(pixel):
+    h,s,v = pixel
+    c = v*s
+    x = c*(1-abs(((h/60)%2)-1))
+    m = v-c
+
+    if h < 60 and h >= 0:
+        rp,gp,bp = c,x,0
+    elif h < 120 and h >= 60:
+        rp,gp,bp = x,c,0
+    elif h < 180 and h >= 120:
+        rp,gp,bp = 0,c,x
+    elif h < 240 and h >= 180:
+        rp,gp,bp = 0,x,c
+    elif h < 300 and h >= 240:
+        rp,gp,bp = x,0,c
+    elif h < 360 and h >= 300:
+        rp,gp,bp = c,0,x
+
+    r,g,b = (rp+m)*255, (gp+m)*255, (bp+m)*255
+    return [r,g,b]
+
+def adjust_light(rgb, new_value):
+    assert new_value <= 1 or new_value >= 0
+    h,s,v = pixel_rgb_to_hsv(rgb)
+    v = new_value
+    _rgb = pixel_hsv_to_rgb([h,s,v])
+    return _rgb
+
+def fix_saturation(rgb):
+    h,s,v = pixel_rgb_to_hsv(rgb) 
+    s += s/2
+    if s > 1:
+        s = 1
+    _rgb = pixel_hsv_to_rgb([h,s,v])
+    return _rgb
+
 class Animations:
     def __init__(self, led, lock, args=None):
         self.led = led
@@ -203,7 +263,15 @@ def dom_color(img):
     hist /= hist.sum()
     centroids = cluster.cluster_centers_
     colors = sorted([(percent, color) for (percent, color) in zip(hist, centroids)], reverse=True)
+    
+    # fix less than 5 clusters:
+    if len(colors) < 5:
+        thing_to_add_at_end = colors[-1]
+        for i in range(5-len(colors)):
+            colors.append(thing_to_add_at_end)
+    
     return colors
+
 
 if __name__ == '__main__':
     scope = "user-read-currently-playing user-read-playback-state"
@@ -223,8 +291,6 @@ if __name__ == '__main__':
     args = parseArguments()
     
     if args.dev:
-        LEDSTRIP_API = '/home/vijay/Documents/devmk4/ws2x-strip/'
-        sys.path.append(LEDSTRIP_API)
         from ws2x import LEDSim
         led = LEDSim()
     else:
@@ -235,10 +301,16 @@ if __name__ == '__main__':
         led.fill((0,0,0))
 
     while(True):
-        raw_output = sp.current_playback()
-        _lock.acquire()
-        out = parse_current_playing(raw_output)
-        _lock.release()
+        try:
+            # make sure the playback method goes through successfully:
+            raw_output = sp.current_playback()
+            _lock.acquire()
+            out = parse_current_playing(raw_output)
+            _lock.release()
+        except Exception as e:
+            print(e)
+            if _lock.locked():
+                _lock.release()
 
         if out['is_playing'] == False:
             resume_same_song = True
@@ -260,6 +332,14 @@ if __name__ == '__main__':
                 with _lock:
                     try:
                         COLORS = dom_color(out['image'])
+
+                        # do color corrections here:
+                        for i in range(len(COLORS)):
+                            tru_color = COLORS[i][1]
+                            tru_color = fix_saturation(tru_color)
+                            tru_color = adjust_light(tru_color, 0.5)
+                            corrected_colors = (COLORS[i][0],)
+
                     except Exception as e:
                         print(e)
                         print('continuing')
